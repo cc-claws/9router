@@ -95,6 +95,7 @@ import p92 from "./vertex.js";
 import p93 from "./volcengine-ark.js";
 import p94 from "./voyage-ai.js";
 import p95 from "./xai.js";
+import p95a from "./xiaomi-desktop.js";
 import p96 from "./xiaomi-mimo.js";
 import p97 from "./xiaomi-tokenplan.js";
 import p98 from "./youcom.js";
@@ -221,6 +222,7 @@ export default [
   p93,
   p94,
   p95,
+  p95a,
   p96,
   p97,
   p98,

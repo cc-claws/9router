@@ -755,3 +755,181 @@ export function stopZedProxy() {
   zedProxyPort = null;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Xiaomi MiMo Desktop OAuth callback proxy
+// Receives the ECDH-encrypted `u` param, decrypts it, stores the session.
+// ───────────────────────────────────────────────────────────────────────────
+
+let xiaomiDesktopProxyServer = null;
+let xiaomiDesktopProxyPort = null;
+let xiaomiDesktopProxyTimeout = null;
+
+const xiaomiDesktopSessions = new Map();
+
+export function registerXiaomiDesktopSession({ state, privateKeyDer }) {
+  if (!state || !privateKeyDer) return false;
+  xiaomiDesktopSessions.set(state, {
+    privateKeyDer,
+    status: "pending",
+    createdAt: Date.now(),
+  });
+  return true;
+}
+
+export function getXiaomiDesktopSessionStatus(state) {
+  const s = xiaomiDesktopSessions.get(state);
+  if (!s) return null;
+  // Don't leak the private key to the client
+  return { status: s.status, result: s.result || null, error: s.error || null };
+}
+
+export function clearXiaomiDesktopSession(state) {
+  xiaomiDesktopSessions.delete(state);
+}
+
+function renderXiaomiDesktopResultPage(success, message) {
+  const color = success ? "#22c55e" : "#ef4444";
+  const icon = success ? "&#10003;" : "&#10007;";
+  const title = success ? "Authentication Successful" : "Authentication Failed";
+  return `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>${title}</title>
+<style>
+  body { font-family: system-ui; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; background: #f5f5f5; }
+  .container { text-align: center; padding: 2rem; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+  .icon { color: ${color}; font-size: 3rem; }
+  h1 { margin: 1rem 0; font-size: 1.25rem; }
+  p { color: #666; font-size: 0.875rem; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">${icon}</div>
+    <h1>${title}</h1>
+    <p>${message || (success ? "You can close this tab and return to 9Router." : "Please try again.")}</p>
+    ${success ? "<script>setTimeout(() => window.close(), 3000);</script>" : ""}
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Start the Xiaomi Desktop OAuth callback proxy.
+ * @returns {Promise<{success: boolean, port?: number, callbackUrl?: string, reason?: string}>}
+ */
+export function startXiaomiDesktopProxy() {
+  return new Promise((resolve) => {
+    if (xiaomiDesktopProxyServer) {
+      resolve({
+        success: true,
+        port: xiaomiDesktopProxyPort,
+        callbackUrl: `http://127.0.0.1:${xiaomiDesktopProxyPort}/`,
+      });
+      return;
+    }
+
+    const server = http.createServer(async (req, res) => {
+      // Origin guard
+      if (!isLoopbackOrigin(req.headers.origin)) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+
+      const url = new URL(req.url, "http://127.0.0.1");
+      const u = url.searchParams.get("u");
+
+      if (!u) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderXiaomiDesktopResultPage(false, "Missing encrypted payload (u parameter)."));
+        return;
+      }
+
+      // Try each pending session's private key — the callback URL carries no
+      // state param, so we attempt decryption with every pending key.
+      const pendingSessions = [...xiaomiDesktopSessions.entries()]
+        .filter(([, s]) => s.status === "pending");
+
+      if (pendingSessions.length === 0) {
+        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderXiaomiDesktopResultPage(false, "No active OAuth session. Please restart the login flow."));
+        return;
+      }
+
+      try {
+        const { decryptCallback } = await import("../providers/xiaomi-desktop.js");
+        let result = null;
+        let matchedState = null;
+
+        for (const [state, session] of pendingSessions) {
+          try {
+            result = decryptCallback(session.privateKeyDer, u);
+            matchedState = state;
+            break;
+          } catch {
+            // Wrong key for this session — try next
+          }
+        }
+
+        if (!result || !matchedState) {
+          throw new Error("Could not decrypt with any pending session key");
+        }
+
+        if (!result.sk) {
+          throw new Error("Decrypted payload missing sk (API key)");
+        }
+
+        // Store result only in the matched session
+        const session = xiaomiDesktopSessions.get(matchedState);
+        if (session) {
+          session.status = "done";
+          session.result = {
+            uid: result.uid,
+            accessToken: result.sk,
+            baseUrl: result.url || "https://api.xiaomimimo.com/v1",
+          };
+        }
+
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderXiaomiDesktopResultPage(true, "Xiaomi account linked. You can close this tab."));
+        console.log("[xiaomi-desktop oauth] callback decrypted, uid:", result.uid);
+      } catch (err) {
+        console.error("[xiaomi-desktop oauth] decrypt failed:", err.message);
+        for (const [, session] of pendingSessions) {
+          session.status = "error";
+          session.error = err.message;
+        }
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderXiaomiDesktopResultPage(false, `Decryption failed: ${err.message}`));
+      }
+    });
+
+    server.on("error", (err) => {
+      console.log("[xiaomi-desktop oauth] listen error:", err.message);
+      resolve({ success: false, reason: err.message });
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      xiaomiDesktopProxyServer = server;
+      xiaomiDesktopProxyPort = server.address().port;
+      xiaomiDesktopProxyTimeout = setTimeout(() => {
+        console.log("[xiaomi-desktop oauth] timeout, stopping");
+        stopXiaomiDesktopProxy();
+      }, 300000);
+      console.log(`[xiaomi-desktop oauth] listening on port ${xiaomiDesktopProxyPort}`);
+      resolve({
+        success: true,
+        port: xiaomiDesktopProxyPort,
+        callbackUrl: `http://127.0.0.1:${xiaomiDesktopProxyPort}/`,
+      });
+    });
+  });
+}
+
+export function stopXiaomiDesktopProxy() {
+  console.log(`[xiaomi-desktop oauth] stopping (port ${xiaomiDesktopProxyPort || "-"})`);
+  if (xiaomiDesktopProxyTimeout) { clearTimeout(xiaomiDesktopProxyTimeout); xiaomiDesktopProxyTimeout = null; }
+  if (xiaomiDesktopProxyServer) { xiaomiDesktopProxyServer.close(); xiaomiDesktopProxyServer = null; }
+  xiaomiDesktopProxyPort = null;
+}
+

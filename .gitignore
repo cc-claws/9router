@@ -89,3 +89,14 @@ graphify-out/*
 
 # Kiro local workspace state
 .kiro/
+
+# Local sensitive / temp files (xiaomi-desktop dev)
+.engine-token.txt
+.tmp-prov.json
+.tmp-providers.json
+.oauth-session.json
+.dev-server.log
+.dev-server-err.log
+.start-dev.ps1
+start-dev-silent.cjs
+debug.log
