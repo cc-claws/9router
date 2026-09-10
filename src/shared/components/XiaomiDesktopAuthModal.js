@@ -67,6 +67,9 @@ export default function XiaomiDesktopAuthModal({ isOpen, onSuccess, onClose }) {
           baseUrl: detectResult.baseUrl,
           engineToken: detectResult.engineToken || null,
           engineUrl: detectResult.engineUrl || null,
+          mimoPassToken: detectResult.mimoPassToken || null,
+          mimoUserId: detectResult.mimoUserId || null,
+          mimoCUserId: detectResult.mimoCUserId || null,
         }),
       });
       const data = await res.json();

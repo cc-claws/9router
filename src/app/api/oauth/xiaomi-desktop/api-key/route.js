@@ -10,7 +10,7 @@ import { createProviderConnection } from "@/models";
  */
 export async function POST(request) {
   try {
-    const { apiKey, uid, baseUrl, engineToken, engineUrl } = await request.json();
+    const { apiKey, uid, baseUrl, engineToken, engineUrl, mimoPassToken, mimoUserId, mimoCUserId } = await request.json();
 
     if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
       return NextResponse.json(
@@ -72,6 +72,10 @@ export async function POST(request) {
           baseUrl: effectiveBaseUrl,
           engineToken: engineToken || existing.providerSpecificData?.engineToken || null,
           engineUrl: engineUrl || existing.providerSpecificData?.engineUrl || null,
+          // Per-account session credential — enables multi-account rotation.
+          mimoPassToken: mimoPassToken || existing.providerSpecificData?.mimoPassToken || null,
+          mimoUserId: mimoUserId || existing.providerSpecificData?.mimoUserId || null,
+          mimoCUserId: mimoCUserId || existing.providerSpecificData?.mimoCUserId || null,
           modelCount,
         },
         testStatus: validated ? "active" : existing.testStatus,
@@ -107,6 +111,10 @@ export async function POST(request) {
         modelCount,
         engineToken: engineToken || null,
         engineUrl: engineUrl || null,
+        // Per-account session credential — enables multi-account rotation.
+        mimoPassToken: mimoPassToken || null,
+        mimoUserId: mimoUserId || null,
+        mimoCUserId: mimoCUserId || null,
       },
       testStatus: validated ? "active" : "untested",
     });

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { readFile, access, constants } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
+import { readDesktopPassToken } from "open-sse/shared/mimoAccount.js";
 
 /**
  * GET /api/oauth/xiaomi-desktop/auto-import
@@ -115,6 +116,23 @@ export async function GET() {
       console.log("[xiaomi-desktop] engine token mint failed (non-fatal):", e.message);
     }
 
+    // Account-session passToken from Desktop's cookie store. Persisting it per
+    // connection is what lets multiple Xiaomi accounts rotate independently.
+    // (null while Desktop is running — its cookie DB is exclusively locked.)
+    let mimoPassToken = null;
+    let mimoUserId = null;
+    let mimoCUserId = null;
+    try {
+      const pt = await readDesktopPassToken();
+      if (pt) {
+        mimoPassToken = pt.passToken;
+        mimoUserId = pt.userId;
+        mimoCUserId = pt.cUserId;
+      }
+    } catch (e) {
+      console.log("[xiaomi-desktop] passToken read failed (non-fatal):", e.message);
+    }
+
     return NextResponse.json({
       found: true,
       apiKey: key,
@@ -123,6 +141,9 @@ export async function GET() {
       source: authPath,
       engineToken,
       engineUrl,
+      mimoPassToken,
+      mimoUserId,
+      mimoCUserId,
     });
   } catch (error) {
     console.log("Xiaomi Desktop auto-import error:", error);

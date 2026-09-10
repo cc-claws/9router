@@ -1,15 +1,16 @@
 /**
  * Xiaomi MiMo Desktop usage — weekly quota from the Xiaomi account session.
  *
- * GET {aistudio_base}/user/usage
- * Auth: Xiaomi account session (NOT the sk- API key)
- * Response: { code: 0, data: { percent: 94, resetDate: "2026-09-16" } }
+ * Primary path: GET {mimo-server}/api/user/usage authorized by the account-session
+ * cookie (see shared/mimoAccount.js). Response: { code: 0, data: { percent (remaining
+ * %), resetDate, resetAt } }.
  *
- * The sk- API key alone cannot access this endpoint. When only an API key is
- * present, we return a graceful message instead of failing.
+ * Fallback: the sk- API key cannot read the quota, so when no account session is
+ * available we surface a graceful message instead of failing.
  */
 
 import { proxyAwareFetch } from "../../utils/proxyFetch.js";
+import { getMimoAccountUsage } from "../../shared/mimoAccount.js";
 
 const USAGE_URL = "https://aistudio.xiaomimimo.com/open-apis/v1/user/usage";
 
@@ -19,8 +20,30 @@ const USAGE_URL = "https://aistudio.xiaomimimo.com/open-apis/v1/user/usage";
  * @param {object|null} proxyOptions
  */
 export async function getXiaomiDesktopUsage(accessToken = null, providerSpecificData = null, proxyOptions = null) {
-  // The weekly quota endpoint needs the Xiaomi account session, not the sk- key.
-  // We try with the sk- key first — if it 401s, we return a clear message.
+  // Preferred path: the weekly quota comes from the account service session
+  // (mimo-server /api/user/usage), which the sk- key cannot reach. The session is
+  // derived from MiMo Desktop's persisted passToken via the SSO/sts handshake.
+  const account = await getMimoAccountUsage(providerSpecificData, proxyOptions);
+  if (typeof account.percent === "number" && Number.isFinite(account.percent)) {
+    const remaining = Math.max(0, Math.min(100, Math.round(account.percent)));
+    const used = 100 - remaining;
+    let resetAt = null;
+    if (typeof account.resetAt === "number" && account.resetAt > 0) {
+      resetAt = new Date(account.resetAt * 1000).toISOString();
+    } else if (typeof account.resetDate === "string") {
+      const parsed = new Date(`${account.resetDate}T00:00:00Z`);
+      if (!Number.isNaN(parsed.getTime())) resetAt = parsed.toISOString();
+    }
+    return {
+      plan: "Xiaomi MiMo Desktop",
+      quotas: {
+        Weekly: { used, total: 100, remainingPercentage: remaining, resetAt, unlimited: false },
+      },
+    };
+  }
+
+  // Fallback: no account session available (Desktop never logged in, or its cookie
+  // store is locked). The sk- key cannot read the quota, so surface a clear message.
   const key = accessToken || providerSpecificData?.apiKey;
   if (!key || typeof key !== "string" || !key.trim()) {
     return { message: "Xiaomi MiMo Desktop not connected. Add credentials to view usage." };
