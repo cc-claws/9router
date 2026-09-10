@@ -90,7 +90,7 @@ export class XiaomiDesktopExecutor extends BaseExecutor {
 
     // A cached session can expire early — drop it and retry once with a fresh one.
     if (response.status === 401 && isPreview) {
-      log?.info?.("AUTH", "xiaomi-desktop 401 — refreshing account session and retrying");
+      log?.debug?.("AUTH", "XIAOMI-DESKTOP 401 — refreshing account session and retrying");
       invalidateMimoAccountCookieCache();
       headers = await this.buildHeaders(credentials, stream, model, log, proxyOptions);
       response = await proxyAwareFetch(
