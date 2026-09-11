@@ -49,14 +49,15 @@ describe("xiaomi-mimo executor", () => {
     ).rejects.toThrow(/account session unavailable/);
   });
 
-  it("flattens content-part arrays to plain strings", () => {
+  it("preserves content-part arrays for multimodal inputs", () => {
+    const parts = [{ type: "image_url", image_url: { url: "data:image/png;base64,xyz" } }, { type: "text", text: "hi" }];
     const out = ex.transformRequest(
       "mimo-x-pro-preview",
-      { messages: [{ role: "user", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }] },
+      { messages: [{ role: "user", content: parts }] },
       true,
       {},
     );
-    expect(out.messages[0].content).toBe("ab");
+    expect(out.messages[0].content).toEqual(parts);
   });
 
   it("applies Preview defaults without overriding explicit values", () => {
