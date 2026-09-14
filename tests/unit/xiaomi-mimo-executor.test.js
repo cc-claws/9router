@@ -78,4 +78,57 @@ describe("xiaomi-mimo executor", () => {
     expect(bareModel("xiaomi/mimo-x-pro-preview")).toBe("mimo-x-pro-preview");
     expect(bareModel("mimo-x-pro-preview")).toBe("mimo-x-pro-preview");
   });
+
+  it("bridges high effort to deep thinking directive and expanded max_tokens", () => {
+    const body = {
+      messages: [{ role: "system", content: "You are an agent." }, { role: "user", content: "solve" }],
+      reasoning_effort: "high"
+    };
+    const out = ex.transformRequest("mimo-x-pro-preview", body, true, {});
+    expect(out.max_tokens).toBe(32768);
+    expect(out.messages[0].content).toContain("[Thinking Directive]");
+    expect(out.messages[0].content).toContain("Please UltraThinking:");
+  });
+
+  it("bridges xhigh effort to extended thinking directive and 64k tokens", () => {
+    const body = {
+      messages: [{ role: "user", content: "complex task" }],
+      reasoning_effort: "xhigh"
+    };
+    const out = ex.transformRequest("mimo-x-pro-preview", body, true, {});
+    expect(out.max_tokens).toBe(65536);
+    expect(out.messages[0].content).toContain("Please UltraThinking (Extended)");
+  });
+
+  it("bridges low effort without extra prompt and allocates moderate budget", () => {
+    const body = {
+      messages: [{ role: "user", content: "quick answer" }],
+      reasoning_effort: "low"
+    };
+    const out = ex.transformRequest("mimo-x-flash-preview", body, true, {});
+    expect(out.max_tokens).toBe(8192);
+    expect(out.messages.some(m => typeof m.content === "string" && m.content.includes("Please UltraThinking"))).toBe(false);
+  });
+
+  it("bridges medium effort with expanded budget but no prompt injection", () => {
+    const body = {
+      messages: [{ role: "user", content: "explain" }],
+      reasoning_effort: "medium"
+    };
+    const out = ex.transformRequest("mimo-x-pro-preview", body, true, {});
+    expect(out.max_tokens).toBe(16384);
+    expect(out.messages.length).toBe(1);
+    expect(out.messages[0].role).toBe("user");
+  });
+
+  it("bridges none effort without prompt injection", () => {
+    const body = {
+      messages: [{ role: "user", content: "hello" }],
+      reasoning_effort: "none"
+    };
+    const out = ex.transformRequest("mimo-x-pro-preview", body, true, {});
+    expect(out.max_tokens).toBe(4096);
+    expect(out.messages.length).toBe(1);
+    expect(out.messages[0].role).toBe("user");
+  });
 });

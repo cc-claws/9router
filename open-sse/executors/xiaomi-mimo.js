@@ -18,6 +18,32 @@ function bareModel(model) {
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
+const ULTRA_THINKING_DIRECTIVES = {
+  high: "Please UltraThinking: conduct a thorough chain-of-thought analysis before taking action or answering. Systematically explore alternative approaches, verify intermediate steps, and address edge cases while strictly adhering to tool invocation schemas if calling tools.",
+  xhigh: "Please UltraThinking (Extended): conduct an extensive, multi-step chain-of-thought analysis before taking action or answering. Rigorously challenge all assumptions, stress-test edge cases and failure modes, actively construct counterexamples, and strictly adhere to tool invocation schemas if calling tools.",
+};
+
+function injectThinkingDirective(messages, directive) {
+  if (!directive || !Array.isArray(messages)) return messages;
+  const alreadyInjected = messages.some((m) =>
+    typeof m.content === "string" && (m.content.includes("Please UltraThinking") || m.content.includes("[Thinking Directive]"))
+  );
+  if (alreadyInjected) return messages;
+
+  const copy = messages.map((m) => ({ ...m }));
+  const sys = copy.find((m) => m.role === "system");
+  if (sys) {
+    if (typeof sys.content === "string") {
+      sys.content = `${sys.content}\n\n[Thinking Directive]\n${directive}`;
+    } else if (Array.isArray(sys.content)) {
+      sys.content = [...sys.content, { type: "text", text: `\n\n[Thinking Directive]\n${directive}` }];
+    }
+  } else {
+    copy.unshift({ role: "system", content: directive });
+  }
+  return copy;
+}
+
 export class XiaomiMimoExecutor extends DefaultExecutor {
   constructor() {
     super("xiaomi-mimo");
@@ -56,13 +82,29 @@ export class XiaomiMimoExecutor extends DefaultExecutor {
     // arrays (see the xiaomi-mimo rule in translator/concerns/paramSupport.js).
     const out = super.transformRequest(model, body, stream, credentials);
 
-    // Preview models: thinking/params get defaults only — never override what the
-    // caller set explicitly. (body.model is already `xiaomi/<id>` via upstreamModelId.)
+    // Preview models: bridge thinking effort (from Claude Code /effort or OpenAI
+    // reasoning_effort) via system prompt directives and dynamic max_tokens budgets.
     if (XiaomiMimoExecutor.isPreviewModel(model)) {
+      const rawEffort = out.reasoning_effort || body?.reasoning_effort || body?.output_config?.effort;
+      const effort = typeof rawEffort === "string" ? rawEffort.toLowerCase() : null;
+
+      if (effort === "xhigh" || effort === "max" || effort === "ultra") {
+        out.messages = injectThinkingDirective(out.messages, ULTRA_THINKING_DIRECTIVES.xhigh);
+        if (!out.max_tokens) out.max_tokens = 65536;
+      } else if (effort === "high") {
+        out.messages = injectThinkingDirective(out.messages, ULTRA_THINKING_DIRECTIVES.high);
+        if (!out.max_tokens) out.max_tokens = 32768;
+      } else if (effort === "medium") {
+        if (!out.max_tokens) out.max_tokens = 16384;
+      } else if (effort === "low") {
+        if (!out.max_tokens) out.max_tokens = 8192;
+      } else {
+        if (!out.max_tokens) out.max_tokens = 4096;
+      }
+
       if (out.thinking == null) out.thinking = { type: "enabled" };
       if (out.temperature == null) out.temperature = 1.0;
       if (out.top_p == null) out.top_p = 0.95;
-      if (!out.max_tokens) out.max_tokens = 4096;
     }
 
     return out;

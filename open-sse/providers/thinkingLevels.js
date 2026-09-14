@@ -40,6 +40,7 @@ const PATTERN_THINKING = [
   { provider: "codex", pattern: "*gpt-5.6-terra*", levels: [...CODEX_GPT_5_6_LEVELS, "ultra"] },
   { provider: "codex", pattern: "*gpt-5.6-luna*", levels: CODEX_GPT_5_6_LEVELS },
   { pattern: "*codex*", levels: ["low", "medium", "high", "xhigh"] }, // codex cannot disable thinking
+  { pattern: "*mimo*preview*", levels: ["none", "low", "medium", "high", "xhigh"] },
   // codebuddy-cn per-model effort sets — the server's product-config payload
   // publishes `reasoning.supportedEfforts` per model. NOTE: the chat endpoint
   // accepts any level you send (probed none/minimal/low/medium/high/xhigh/max
