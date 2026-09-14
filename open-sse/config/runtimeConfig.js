@@ -55,8 +55,15 @@ export const STREAM_STALL_TIMEOUT_MS = envMs("STREAM_STALL_TIMEOUT_MS", 360 * 10
 // Time-to-first-token timeout (prompt prefill). Env: STREAM_FIRST_CHUNK_TIMEOUT_MS.
 export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_MS", 200 * 1000);
 
-// Fetch connect timeout: abort if upstream doesn't return response headers within this duration
+// Fetch connect timeout: abort if upstream doesn't return response headers within this duration.
+// Only meaningful for streaming requests, where headers arrive before generation starts.
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// Non-stream response timeout. Non-streaming upstreams only send response headers after the
+// whole body is generated, so this is effectively a total-generation budget — it must sit well
+// above FETCH_CONNECT_TIMEOUT_MS or long-thinking requests are aborted mid-generation.
+// Env: NONSTREAM_RESPONSE_TIMEOUT_MS.
+export const NONSTREAM_RESPONSE_TIMEOUT_MS = envMs("NONSTREAM_RESPONSE_TIMEOUT_MS", 10 * 60 * 1000);
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

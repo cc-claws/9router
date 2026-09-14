@@ -1,4 +1,4 @@
-import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS } from "../config/runtimeConfig.js";
+import { HTTP_STATUS, RETRY_CONFIG, DEFAULT_RETRY_CONFIG, resolveRetryEntry, FETCH_CONNECT_TIMEOUT_MS, NONSTREAM_RESPONSE_TIMEOUT_MS } from "../config/runtimeConfig.js";
 import { shouldRefreshCredentials } from "../services/oauthCredentialManager.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
@@ -131,16 +131,20 @@ export class BaseExecutor {
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
-      // Abort if upstream doesn't return response headers within connection timeout
+      // Abort if upstream doesn't return response headers within the deadline.
+      // Streaming: headers arrive before generation, so this is a real connect budget.
+      // Non-streaming: headers only arrive after the whole body is generated, so the
+      // budget must cover total generation time (long-thinking requests need minutes).
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const timeoutMs = this.config?.timeoutMs || (stream ? FETCH_CONNECT_TIMEOUT_MS : NONSTREAM_RESPONSE_TIMEOUT_MS);
+      const timeoutLabel = stream ? "fetch connect timeout" : "non-stream response timeout";
+      const connectTimer = setTimeout(() => connectCtrl.abort(new Error(timeoutLabel)), timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
         const bodyStr = JSON.stringify(transformedBody);
         const fetchT0 = Date.now();
-        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | connectTimeout=${timeoutMs}ms`);
+        dbg("FETCH", `${this.provider.toUpperCase()} → ${url} | body=${bodyStr.length}B | ${stream ? "connectTimeout" : "responseTimeout"}=${timeoutMs}ms`);
         const response = await proxyAwareFetch(url, {
           method: "POST",
           headers,
@@ -165,7 +169,7 @@ export class BaseExecutor {
         clearTimeout(connectTimer);
         lastError = error;
         const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
-        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
+        dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? ` (${timeoutLabel})` : ""}`);
         // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
         if (error.name === "AbortError" && !isConnectTimeout) throw error;
 
