@@ -23,6 +23,7 @@ import EditCompatibleNodeModal from "./EditCompatibleNodeModal";
 import AddCustomModelModal from "./AddCustomModelModal";
 import BulkImportCodexModal from "./BulkImportCodexModal";
 import BulkImportGrokCliModal from "./BulkImportGrokCliModal";
+import AutoImportCodebuddyCnModal from "./AutoImportCodebuddyCnModal";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -51,6 +52,7 @@ export default function ProviderDetailPage() {
   const [addConnectionError, setAddConnectionError] = useState("");
   const [showBulkImportCodex, setShowBulkImportCodex] = useState(false);
   const [showBulkImportGrokCli, setShowBulkImportGrokCli] = useState(false);
+  const [showAutoImportCb, setShowAutoImportCb] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showEditNodeModal, setShowEditNodeModal] = useState(false);
   const [showBulkProxyModal, setShowBulkProxyModal] = useState(false);
@@ -1604,6 +1606,11 @@ export default function ProviderDetailPage() {
                         {translate("Bulk Add")}
                       </Button>
                     )}
+                    {providerId === "codebuddy-cn" && (
+                      <Button size="sm" icon="sync" variant="secondary" onClick={() => setShowAutoImportCb(true)}>
+                        {translate("Import from WorkBuddy")}
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       icon="add"
@@ -1683,6 +1690,18 @@ export default function ProviderDetailPage() {
                       className="w-full sm:w-auto"
                     >
                       {translate("Bulk Add")}
+                    </Button>
+                  )}
+                  {providerId === "codebuddy-cn" && (
+                    <Button
+                      size="sm"
+                      icon="sync"
+                      variant="secondary"
+                      onClick={() => setShowAutoImportCb(true)}
+                      title={translate("Import accounts from local WorkBuddy (wb-switch)")}
+                      className="w-full sm:w-auto"
+                    >
+                      {translate("Import from WorkBuddy")}
                     </Button>
                   )}
                   {hasDualAuthModes ? (
@@ -1877,6 +1896,15 @@ export default function ProviderDetailPage() {
           isOpen={showBulkImportGrokCli}
           onClose={() => setShowBulkImportGrokCli(false)}
           onSuccess={fetchConnections}
+        />
+      )}
+
+      {providerId === "codebuddy-cn" && (
+        <AutoImportCodebuddyCnModal
+          isOpen={showAutoImportCb}
+          onClose={() => setShowAutoImportCb(false)}
+          onSuccess={fetchConnections}
+          onFallbackOAuth={openOAuthConnection}
         />
       )}
 
