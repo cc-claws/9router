@@ -30,6 +30,7 @@ import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
+import { beginGeneration, endGeneration, updateGeneration } from "@/lib/langfuseTracing";
 
 /**
  * Core chat handler - shared between SSE and Worker
@@ -58,7 +59,7 @@ export function stripContinuityFields(body) {
   return body;
 }
 
-export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking }) {
+export async function handleChatCore({ body, modelInfo, credentials, log, onCredentialsRefreshed, onRequestSuccess, onDisconnect, clientRawRequest, connectionId, userAgent, apiKey, ccFilterNaming, rtkEnabled, headroomEnabled, headroomUrl, headroomCompressUserMessages, headroomTimeoutMs, cavemanEnabled, cavemanLevel, ponytailEnabled, ponytailLevel, pxpipeEnabled, pxpipeMinChars, pxpipeTimeoutMs, pxpipeTransform, onPxpipeEvent, sourceFormatOverride, providerThinking, traceContext }) {
   const { provider, model } = modelInfo;
   const requestStartTime = Date.now();
   // Stable per-session color so all lines of one CLI conversation share a tag
@@ -199,6 +200,18 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     delete translatedBody._customToolNames;
     translatedBody.model = stripThinkingSuffix(upstreamModel);
     stripContinuityFields(translatedBody);
+  }
+
+  // A client that omits `stream` is treated locally as streaming (`body.stream !== false`),
+  // but that decision never reached the upstream body: translateRequest returns the body
+  // untouched when source and target formats match, so the field stayed absent. An
+  // OpenAI-compatible upstream then answers with a single JSON body while this pipeline
+  // parses it as SSE — usage/cost were silently recorded as 0 and the client got a
+  // non-SSE body. Write the decision back. Scoped to OpenAI-format upstreams: the
+  // Gemini family selects streaming via URL (generateContent vs streamGenerateContent),
+  // and their translators own the field.
+  if ((passthrough ? sourceFormat : targetFormat) === FORMATS.OPENAI && translatedBody.stream === undefined) {
+    translatedBody.stream = stream;
   }
 
   // Dedupe duplicate built-in tools when equivalent MCP tools are present (Claude clients only).
@@ -359,6 +372,26 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Most executors return their registry format. Cursor AgentService is an
   // exception: it is decoded by the executor into OpenAI-compatible output.
   let providerResponseFormat = targetFormat;
+
+  // Langfuse generation — one per actual upstream LLM call. Carries model/usage
+  // so Langfuse computes cost and renders input/output. No-op unless enabled.
+  const includeContent = String(process.env.LANGFUSE_INCLUDE_CONTENT || "").toLowerCase() === "true";
+  const langfuseGen = await beginGeneration(`${provider}/${model}`, {
+    model: upstreamModel || model,
+    modelParameters: includeContent
+      ? { stream, temperature: body.temperature, max_tokens: body.max_tokens }
+      : { stream },
+    metadata: {
+      provider,
+      connectionId: connectionId || undefined,
+      sourceFormat,
+      targetFormat,
+      clientTool: clientTool || undefined,
+    },
+    input: includeContent ? extractRequestConfig(body, stream) : { model: body.model, turns: body.messages?.length ?? undefined },
+  }, traceContext?.attemptSpanContext || null);
+  if (traceContext) traceContext.langfuseGen = langfuseGen;
+
   try {
     const result = await executor.execute({
       model,
@@ -377,6 +410,16 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     finalBody = result.transformedBody;
     providerResponseFormat = result.responseFormat || targetFormat;
     reqLogger.logTargetRequest(providerUrl, providerHeaders, finalBody);
+
+    // The body that actually went upstream can differ from what the client sent:
+    // executors may inject directives (e.g. xiaomi-mimo's thinking prompt on
+    // high/xhigh). Reflect that in the generation so Langfuse shows the real
+    // prompt, not the pre-injection one. Capped — agent requests can be MBs.
+    if (includeContent && traceContext?.langfuseGen && Array.isArray(finalBody?.messages)) {
+      updateGeneration(traceContext.langfuseGen, {
+        input: { model: finalBody.model || model, messages: finalBody.messages, max_tokens: finalBody.max_tokens },
+      });
+    }
   } catch (error) {
     trackPendingRequest(model, provider, connectionId, false, true);
     appendRequestLog({ model, provider, connectionId, status: `FAILED ${error.name === "AbortError" ? 499 : HTTP_STATUS.BAD_GATEWAY}` }).catch(() => { });
@@ -389,7 +432,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       response: { error: error.message || String(error), status: error.name === "AbortError" ? 499 : 502, thinking: null },
       pxpipe: pxpipeSummary,
       status: "error"
-    })).catch(() => { });
+    }, traceContext || {})).catch(() => { });
+    endGeneration(langfuseGen, { level: "ERROR", statusMessage: error.message || String(error) });
 
     if (error.name === "AbortError") {
       streamController.handleError(error);
@@ -463,7 +507,8 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
       response: { error: message, status: statusCode, thinking: null },
       pxpipe: pxpipeSummary,
       status: "error"
-    })).catch(() => { });
+    }, traceContext || {})).catch(() => { });
+    endGeneration(langfuseGen, { level: "ERROR", statusMessage: `HTTP ${statusCode} · ${message}` });
 
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     if (log?.errorLine) {
@@ -474,7 +519,7 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
     return createErrorResult(statusCode, errMsg, resetsAtMs);
   }
 
-  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log };
+  const sharedCtx = { provider, model, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, pxpipe: pxpipeSummary, reqTag, log, traceContext };
   const appendLog = (extra) => appendRequestLog({ model, provider, connectionId, ...extra }).catch(() => { });
   const trackDone = () => trackPendingRequest(model, provider, connectionId, false);
 
@@ -492,6 +537,9 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   }
 
   // Streaming response
+  // The response body streams past this return, so both the Langfuse generation
+  // and the request's root span are finalized by onStreamComplete instead.
+  if (traceContext) traceContext.streamingPending = true;
   const { onStreamComplete, streamDetailId } = buildOnStreamComplete({ ...sharedCtx });
   return handleStreamingResponse({ ...sharedCtx, providerResponse, sourceFormat, targetFormat: providerResponseFormat, userAgent, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, credentials });
 }

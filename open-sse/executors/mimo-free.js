@@ -1,4 +1,4 @@
-import { BaseExecutor } from "./base.js";
+import { copyForTransform, BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { createHash } from "crypto";
@@ -138,7 +138,7 @@ export class MimoFreeExecutor extends BaseExecutor {
     }
 
     const url = this.buildUrl();
-    const transformedBody = this.transformRequest(model, body);
+    const transformedBody = this.transformRequest(model, copyForTransform(body));
     const headers = { ...this.buildHeaders(credentials, stream), "Authorization": `Bearer ${jwt}` };
     const bodyStr = JSON.stringify(transformedBody);
     log?.debug?.("FETCH", `MIMO-FREE → ${url} | body=${bodyStr.length}B`);

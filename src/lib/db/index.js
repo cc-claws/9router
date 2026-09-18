@@ -67,6 +67,14 @@ export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
+// Traces (Langfuse-style observability)
+export {
+  createTrace, finalizeTrace, refreshTraceAggregates,
+  getTraces, getTraceById, getTraceSpans, getSessions,
+  addTraceScore, getTraceScores, deleteTraceScore,
+  getPrompts, getPromptById, savePrompt, deletePrompt,
+} from "./repos/traceRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

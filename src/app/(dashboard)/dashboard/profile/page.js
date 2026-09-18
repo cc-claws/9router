@@ -1610,7 +1610,9 @@ export default function ProfilePage() {
             <div className="flex-1 min-w-0">
               <p className="font-medium text-sm sm:text-base">Enable Observability</p>
               <p className="text-xs sm:text-sm text-text-muted">
-                Record request details for inspection in the logs view
+                Master switch for Traces: records full request/response bodies locally,
+                and — when Langfuse is configured — reports them to it. Takes effect
+                within seconds, no restart needed. Turn off when not debugging.
               </p>
             </div>
             <Toggle

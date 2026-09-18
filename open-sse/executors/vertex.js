@@ -1,4 +1,4 @@
-import { BaseExecutor } from "./base.js";
+import { copyForTransform, BaseExecutor } from "./base.js";
 import { PROVIDERS } from "../config/providers.js";
 import { parseVertexSaJson, refreshVertexToken, refreshGoogleToken } from "../services/tokenRefresh.js";
 import { proxyAwareFetch } from "../utils/proxyFetch.js";
@@ -161,7 +161,7 @@ export class VertexExecutor extends BaseExecutor {
 
     const url = this.buildUrl(model, stream, 0, credentials);
     const headers = this.buildHeaders(credentials, stream);
-    const transformedBody = this.transformRequest(model, body, stream, credentials);
+    const transformedBody = this.transformRequest(model, copyForTransform(body), stream, credentials);
 
     const response = await proxyAwareFetch(url, {
       method: "POST",

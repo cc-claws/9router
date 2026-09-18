@@ -24,6 +24,29 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import crypto from "crypto";
+import { createTrace, finalizeTrace, saveRequestDetail } from "@/lib/usageDb";
+import { resolveSessionId } from "open-sse/utils/sessionManager.js";
+import { withRootSpan, finalizeRootSpan, beginSpan, spanContextOf, setTraceIO } from "@/lib/langfuseTracing";
+
+/**
+ * Lightweight span for attempts that die before reaching chatCore (no
+ * credentials / rate-limited). Keeps the trace waterfall complete.
+ */
+function recordFallbackSpan(traceCtx, spanIndex, provider, model, kind, message) {
+  saveRequestDetail({
+    provider,
+    model,
+    timestamp: new Date().toISOString(),
+    status: "error",
+    latency: { ttft: 0, total: 0 },
+    tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    response: { error: message, status: null, kind, thinking: null },
+    traceId: traceCtx.traceId,
+    spanIndex,
+    spanName: `attempt ${spanIndex + 1}: ${provider}/${model} · ${kind}`,
+  }).catch(() => {});
+}
 
 /**
  * Handle chat completion request
@@ -92,78 +115,150 @@ export async function handleChat(request, clientRawRequest = null) {
 
   const requiredCapabilities = detectRequiredCapabilities(body);
 
-  // Check if model is a combo (has multiple models with fallback)
-  const comboModels = await getComboModels(modelStr);
-  if (comboModels) {
-    // Check for combo-specific strategy first, fallback to global
-    const comboStrategies = settings.comboStrategies || {};
-    const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
-    const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
-    const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
+  // ── Trace context (Langfuse-style): one trace per client request, spans per
+  // (model, account) attempt. All writes are fail-open — never touch the request path.
+  const traceId = crypto.randomUUID();
+  const sessionId = (() => {
+    try { return resolveSessionId({ headers: clientRawRequest?.headers, body }); } catch { return null; }
+  })();
+  const traceCtx = {
+    traceId,
+    spanCounter: 0,
+    nextSpanIndex: () => traceCtx.spanCounter++,
+    // Set by chatCore when the response streams past this handler's return;
+    // the root span is then ended by onStreamComplete instead of here.
+    streamingPending: false,
+  };
+  createTrace({
+    id: traceId,
+    timestamp: new Date().toISOString(),
+    sessionId,
+    apiKey: apiKey ? log.maskKey(apiKey) : null,
+    endpoint: clientRawRequest?.endpoint || (request?.url ? new URL(request.url).pathname : null),
+    requestedModel: modelStr,
+    userAgent: request?.headers?.get("user-agent") || "",
+    status: "running",
+  }).catch(() => {});
+  const finalizeOnReturn = (promise) =>
+    Promise.resolve(promise).then((res) => {
+      finalizeTrace(traceId, {
+        status: res?.ok ? "success" : "error",
+        errorSummary: res?.ok ? null : `HTTP ${res?.status}`,
+      }).catch(() => {});
+      // Streaming responses outlive this return — onStreamComplete ends the span.
+      if (!traceCtx.streamingPending) {
+        finalizeRootSpan(traceCtx.rootSpan, {
+          level: res?.ok ? "DEFAULT" : "ERROR",
+          statusMessage: res?.ok ? undefined : `HTTP ${res?.status}`,
+        });
+      }
+      return res;
+    });
 
-    if (comboStrategy === "fusion") {
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
-      return handleFusionChat({
+  // Check if model is a combo (has multiple models with fallback)
+  const dispatch = async () => {
+    const comboModels = await getComboModels(modelStr);
+    if (comboModels) {
+      // Check for combo-specific strategy first, fallback to global
+      const comboStrategies = settings.comboStrategies || {};
+      const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
+      const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+      const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
+      const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
+
+      if (comboStrategy === "fusion") {
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: fusion)`);
+        return handleFusionChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isPanel) => {
+            let cleanRawReq = clientRawRequest;
+            if (isPanel && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, traceCtx);
+          },
+          log,
+          comboName: modelStr,
+          judgeModel: comboStrategies[modelStr]?.judgeModel,
+          tuning: comboStrategies[modelStr]?.fusionTuning,
+        });
+      }
+
+      const comboStickyLimit = settings.comboStickyRoundRobinLimit;
+      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      return handleComboChat({
         body,
-        models: comboModels,
-        handleSingleModel: (b, m, isPanel) => {
-          let cleanRawReq = clientRawRequest;
-          if (isPanel && clientRawRequest) {
-            const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-            cleanRawReq = { ...clientRawRequest, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
-        },
+        models: augmentedModels,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, traceCtx),
+          adapterAdded
+        ),
         log,
         comboName: modelStr,
-        judgeModel: comboStrategies[modelStr]?.judgeModel,
-        tuning: comboStrategies[modelStr]?.fusionTuning,
+        comboStrategy,
+        comboStickyLimit
       });
     }
 
-    const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-    log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
-    return handleComboChat({
-      body,
-      models: augmentedModels,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
-        adapterAdded
-      ),
-      log,
-      comboName: modelStr,
-      comboStrategy,
-      comboStickyLimit
-    });
-  }
+    // Single model request — may still switch to a capacity-adapter model if the
+    // target lacks a capability the request needs (e.g. no vision, request has an image).
+    const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
+    if (soloAugmented.length > 1) {
+      const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
+      log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
+      return handleComboChat({
+        body,
+        models: soloAugmented,
+        handleSingleModel: withCapacityAdapterStripping(
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, traceCtx),
+          adapterAdded
+        ),
+        log,
+        comboName: modelStr,
+        comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      });
+    }
 
-  // Single model request — may still switch to a capacity-adapter model if the
-  // target lacks a capability the request needs (e.g. no vision, request has an image).
-  const soloAugmented = augmentModelsWithCapacityAdapter([modelStr], requiredCapabilities, settings);
-  if (soloAugmented.length > 1) {
-    const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
-    log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
-    return handleComboChat({
-      body,
-      models: soloAugmented,
-      handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
-        adapterAdded
-      ),
-      log,
-      comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
-    });
-  }
+    return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, traceCtx);
+  };
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  // Root observation for Langfuse. Every nested span/generation parents under
+  // it automatically via OTel context. No-op unless LANGFUSE_ENABLED.
+  return withRootSpan(
+    modelStr,
+    {
+      sessionId: sessionId || undefined,
+      metadata: {
+        endpoint: clientRawRequest?.endpoint || (request?.url ? new URL(request.url).pathname : undefined),
+        userAgent,
+        apiKey: apiKey ? log.maskKey(apiKey) : undefined,
+        turns: body.messages?.length ?? undefined,
+      },
+    },
+    async (rootSpan) => {
+      traceCtx.rootSpan = rootSpan;
+      // Trace-level input (what Langfuse shows on the trace row). Full messages
+      // only when content reporting is on; otherwise just the shape.
+      await setTraceIO(rootSpan, {
+        input:
+          String(process.env.LANGFUSE_INCLUDE_CONTENT || "").toLowerCase() === "true"
+            ? { model: modelStr, messages: body.messages }
+            : { model: modelStr, turns: body.messages?.length ?? undefined },
+      });
+      return finalizeOnReturn(dispatch());
+    },
+    // Trace-level identity. sessionId groups multi-turn conversations in
+    // Langfuse's Sessions view; the masked API key doubles as the user.
+    { sessionId, userId: apiKey ? log.maskKey(apiKey) : undefined, traceName: modelStr }
+  );
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, traceCtx = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -190,7 +285,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, traceCtx);
           },
           log,
           comboName: modelStr,
@@ -205,7 +300,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, traceCtx),
           adapterAdded
         ),
         log,
@@ -232,6 +327,19 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const spanIndex = traceCtx ? traceCtx.nextSpanIndex() : null;
+    const attemptLabel = `account ${provider}/${model} @ ${credentials?.connectionName || credentials?.connectionId || "none"}`;
+    const attemptSpan = await beginSpan(attemptLabel, {
+      metadata: { provider, model, connectionId: credentials?.connectionId || undefined, attempt: (spanIndex ?? 0) + 1 },
+    });
+    // Pin the LLM generation under this attempt explicitly — context-based
+    // parenting can't be relied on once the bundle and runtime each hold their
+    // own @opentelemetry/api instance.
+    if (traceCtx) {
+      traceCtx.attemptSpanContext = spanContextOf(attemptSpan);
+      traceCtx.spanIndex = spanIndex;
+      traceCtx.spanName = `attempt ${spanIndex + 1}: ${provider}/${model} @ ${credentials?.connectionName || credentials?.connectionId || "none"}`;
+    }
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -239,13 +347,19 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
+        if (traceCtx) recordFallbackSpan(traceCtx, spanIndex, provider, model, "all-rate-limited", `HTTP ${status} · ${errorMsg}`);
+        attemptSpan.update({ level: "ERROR", statusMessage: `HTTP ${status} · ${errorMsg}` }).end();
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
+        if (traceCtx) recordFallbackSpan(traceCtx, spanIndex, provider, model, "no-credentials", `No active credentials for provider: ${provider}`);
+        attemptSpan.update({ level: "ERROR", statusMessage: `No active credentials for provider: ${provider}` }).end();
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
       }
       log.warn("CHAT", "No more accounts available", { provider });
+      if (traceCtx) recordFallbackSpan(traceCtx, spanIndex, provider, model, "no-accounts", lastError || "All accounts unavailable");
+      attemptSpan.update({ level: "ERROR", statusMessage: lastError || "All accounts unavailable" }).end();
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
@@ -267,6 +381,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
+      // Pass the shared context object itself (not a copy): chatCore writes
+      // back langfuseGen/streamingPending, and chat.js reads streamingPending
+      // to decide whether it may end the root span. Per-attempt fields are
+      // overwritten each loop iteration and read synchronously by chatCore.
+      traceContext: traceCtx,
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
@@ -307,7 +426,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      attemptSpan.update({ output: { status: "ok", httpStatus: 200 } }).end();
+      return result.response;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -328,12 +450,22 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     if (shouldFallback) {
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
+      attemptSpan.update({
+        level: "ERROR",
+        statusMessage: `HTTP ${result.status} · ${result.error || ""}`.trim(),
+        output: { status: "fallback", httpStatus: result.status },
+      }).end();
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;
       lastStatus = result.status;
       continue;
     }
 
+    attemptSpan.update({
+      level: "ERROR",
+      statusMessage: `HTTP ${result.status} · ${result.error || ""}`.trim(),
+      output: { status: "no-fallback", httpStatus: result.status },
+    }).end();
     return result.response;
   }
 }

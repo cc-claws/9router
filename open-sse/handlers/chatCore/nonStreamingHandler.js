@@ -9,6 +9,7 @@ import { parseSSEToOpenAIResponse } from "./sseToJsonHandler.js";
 import { unwrapClineEnvelope } from "../../shared/clineEnvelope.js";
 import { buildRequestDetail, extractRequestConfig, extractUsageFromResponse, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
+import { endGeneration, setTraceIO } from "@/lib/langfuseTracing";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 
@@ -282,7 +283,7 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
 /**
  * Handle non-streaming response from provider.
  */
-export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log }) {
+export async function handleNonStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, trackDone, appendLog, pxpipe, reqTag, log, traceContext }) {
   trackDone();
   const contentType = providerResponse.headers.get("content-type") || "";
   let responseBody;
@@ -391,9 +392,23 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
     },
     pxpipe,
     status: "success"
-  }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
+  }, { endpoint: clientRawRequest?.endpoint || null, ...(traceContext || {}) })).catch(err => {
     console.error("[RequestDetail] Failed to save:", err.message);
   });
+  const lfIncludeContent = String(process.env.LANGFUSE_INCLUDE_CONTENT || "").toLowerCase() === "true";
+  endGeneration(traceContext?.langfuseGen, {
+    output: lfIncludeContent
+      ? translatedResponse?.choices?.[0]?.message || translatedResponse?.content || null
+      : { ok: true, finish_reason: translatedResponse?.choices?.[0]?.finish_reason },
+    usage: { input: usage?.prompt_tokens ?? usage?.input_tokens, output: usage?.completion_tokens ?? usage?.output_tokens },
+  });
+  // Trace-level output. chat.js ends the root span after this handler returns,
+  // so set the value here while the response is in hand.
+  await setTraceIO(traceContext?.rootSpan, {
+    output: lfIncludeContent
+      ? translatedResponse?.choices?.[0]?.message || translatedResponse?.content || null
+      : { ok: true, finish_reason: translatedResponse?.choices?.[0]?.finish_reason },
+  }).catch(() => {});
 
   return {
     success: true,

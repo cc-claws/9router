@@ -5,6 +5,7 @@ import { FORMATS } from "open-sse/translator/formats.js";
 import { getModelInfo } from "@/sse/services/model.js";
 import { getProviderConnections } from "@/lib/localDb.js";
 import { getExecutor } from "open-sse/executors/index.js";
+import { copyForTransform } from "open-sse/executors/base.js";
 
 export async function POST(request) {
   try {
@@ -75,7 +76,9 @@ export async function POST(request) {
         const executor = getExecutor(provider);
         const url = executor.buildUrl(model, stream, 0, credentials);
         const headers = executor.buildHeaders(credentials, stream);
-        const finalBody = executor.transformRequest(model, translated, stream, credentials);
+        // copyForTransform keeps the executor from mutating `translated`, so the
+        // displayed stage-3 body stays a pure transformation of stage 2.
+        const finalBody = executor.transformRequest(model, copyForTransform(translated), stream, credentials);
 
         return NextResponse.json({ success: true, result: { url, headers, body: finalBody } });
       }

@@ -6,6 +6,25 @@ import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
 
 /**
+ * Copy a request body one level deeper than `{...body}` so executor
+ * transformations cannot leak back into the caller's object.
+ *
+ * Top-level spread alone is not enough: stripUnsupportedParams rewrites
+ * `message.content` on the message objects themselves, which a shallow copy
+ * would still share. Messages are the only container known to be mutated in
+ * place, so copying that one level keeps this O(messages) instead of deep-
+ * cloning multi-MB agent payloads on every retry iteration.
+ */
+export function copyForTransform(body) {
+  if (!body || typeof body !== "object") return body;
+  const copy = { ...body };
+  if (Array.isArray(body.messages)) {
+    copy.messages = body.messages.map((m) => (m && typeof m === "object" ? { ...m } : m));
+  }
+  return copy;
+}
+
+/**
  * BaseExecutor - Base class for provider executors
  */
 export class BaseExecutor {
@@ -126,7 +145,14 @@ export class BaseExecutor {
 
     for (let urlIndex = 0; urlIndex < fallbackCount; urlIndex++) {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
-      const transformedBody = this.transformRequest(model, body, stream, credentials);
+      // Hand transformRequest a private copy. Subclasses mutate what they get
+      // (stripUnsupportedParams deletes top-level keys and rewrites
+      // message.content; xiaomi-mimo adds sampling defaults and appends a
+      // thinking directive), and `body` here is the caller's translated request
+      // — sharing it leaked gateway edits back into chatCore's `body`, so the
+      // recorded "client request" showed gateway-injected fields, and a retry
+      // re-transformed an already-transformed body.
+      const transformedBody = this.transformRequest(model, copyForTransform(body), stream, credentials);
       const headers = this.buildHeaders(credentials, stream, url, model);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;

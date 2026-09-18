@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -144,12 +144,66 @@ export const TABLES = {
       connectionId: "TEXT",
       status: "TEXT",
       data: "TEXT NOT NULL",
+      traceId: "TEXT",
+      spanIndex: "INTEGER",
+      spanName: "TEXT",
     },
     indexes: [
       "CREATE INDEX IF NOT EXISTS idx_rd_ts ON requestDetails(timestamp DESC)",
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+      "CREATE INDEX IF NOT EXISTS idx_rd_trace ON requestDetails(traceId)",
+    ],
+  },
+  traces: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      timestamp: "TEXT NOT NULL",
+      sessionId: "TEXT",
+      apiKey: "TEXT",
+      endpoint: "TEXT",
+      requestedModel: "TEXT",
+      comboName: "TEXT",
+      status: "TEXT DEFAULT 'running'",
+      spans: "INTEGER DEFAULT 0",
+      latencyTotal: "INTEGER DEFAULT 0",
+      promptTokens: "INTEGER DEFAULT 0",
+      completionTokens: "INTEGER DEFAULT 0",
+      cost: "REAL DEFAULT 0",
+      errorSummary: "TEXT",
+      userAgent: "TEXT",
+      meta: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_traces_ts ON traces(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_traces_session ON traces(sessionId)",
+      "CREATE INDEX IF NOT EXISTS idx_traces_status ON traces(status)",
+    ],
+  },
+  traceScores: {
+    columns: {
+      id: "INTEGER PRIMARY KEY AUTOINCREMENT",
+      traceId: "TEXT NOT NULL",
+      score: "INTEGER",
+      comment: "TEXT",
+      createdAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_ts_trace ON traceScores(traceId)",
+    ],
+  },
+  promptLibrary: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      name: "TEXT NOT NULL",
+      content: "TEXT NOT NULL",
+      sourceTraceId: "TEXT",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_pl_ts ON promptLibrary(updatedAt DESC)",
     ],
   },
 };

@@ -66,6 +66,24 @@ export function createSSEStream(options = {}) {
   let totalContentLength = 0;
   let accumulatedContent = "";
   let accumulatedThinking = "";
+  // Tool calls arrive as incremental deltas (index, id once, then name/argument
+  // fragments). Without merging them a tool-only turn has no content at all, so
+  // every observability consumer downstream reports "[Empty streaming response]"
+  // — which for agent traffic (Claude Code etc.) is a large share of turns.
+  const accumulatedToolCalls = new Map();
+  const mergeToolCallDelta = (tc) => {
+    if (!tc || typeof tc !== "object") return;
+    const idx = Number.isInteger(tc.index) ? tc.index : 0;
+    let entry = accumulatedToolCalls.get(idx);
+    if (!entry) {
+      entry = { id: "", type: "function", function: { name: "", arguments: "" } };
+      accumulatedToolCalls.set(idx, entry);
+    }
+    if (tc.id) entry.id = tc.id;
+    if (tc.type) entry.type = tc.type;
+    if (tc.function?.name) entry.function.name += tc.function.name;
+    if (tc.function?.arguments) entry.function.arguments += tc.function.arguments;
+  };
   let ttftAt = null;
   let sseLineCount = 0;
   let sseEmittedCount = 0;
@@ -101,7 +119,10 @@ export function createSSEStream(options = {}) {
     if (onStreamComplete) {
       onStreamComplete({
         content: accumulatedContent,
-        thinking: accumulatedThinking
+        thinking: accumulatedThinking,
+        toolCalls: accumulatedToolCalls.size
+          ? [...accumulatedToolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([idx, tc]) => ({ index: idx, ...tc }))
+          : undefined
       }, finalUsage, ttftAt);
     }
   };
@@ -192,6 +213,9 @@ export function createSSEStream(options = {}) {
               if (reasoning && typeof reasoning === "string") {
                 totalContentLength += reasoning.length;
                 accumulatedThinking += reasoning;
+              }
+              if (Array.isArray(delta?.tool_calls)) {
+                for (const tc of delta.tool_calls) mergeToolCallDelta(tc);
               }
 
               const extracted = extractUsage(parsed);
