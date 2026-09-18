@@ -83,4 +83,9 @@ describe("custom-server peer header sanitizing", () => {
     expect(sanitized["authorization"]).toBeUndefined();
     expect(sanitized["x-9r-real-ip"]).toBe("127.0.0.1");
   });
+
+  it("configures server keepAliveTimeout and headersTimeout to mitigate client pool race conditions", () => {
+    expect(server.keepAliveTimeout).toBe(65000);
+    expect(server.headersTimeout).toBe(66000);
+  });
 });

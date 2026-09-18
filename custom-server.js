@@ -73,6 +73,10 @@ http.createServer = (...args) => {
     return handler(req, res);
   };
   const server = origCreate(...rest, wrapped);
+  // Ensure server keep-alive timeout is longer than client pool idle timeouts (e.g. reqwest 60s)
+  // to prevent race conditions where the server closes the socket while the client sends a request.
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
   server.once("listening", () => {
     startBackgroundTokenRefreshFromCustomServer();
   });
