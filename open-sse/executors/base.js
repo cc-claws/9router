@@ -153,7 +153,7 @@ export class BaseExecutor {
       // recorded "client request" showed gateway-injected fields, and a retry
       // re-transformed an already-transformed body.
       const transformedBody = this.transformRequest(model, copyForTransform(body), stream, credentials);
-      const headers = this.buildHeaders(credentials, stream, url, model);
+      const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
