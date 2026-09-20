@@ -17,6 +17,7 @@ import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
+import { resolveJevRoute } from "open-sse/services/jevRouting.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
@@ -186,18 +187,41 @@ export async function handleChat(request, clientRawRequest = null) {
         });
       }
 
+      let finalModels = augmentedModels;
+      let effectiveStrategy = comboStrategy;
+      const jevSettings = settings.jevRouting;
+      if (jevSettings?.enabled && augmentedModels.length > 1) {
+        const routePolicy = comboStrategies[modelStr]?.routePolicy || "quality";
+        const openrouterCreds = await getProviderCredentials("openrouter");
+        const openrouterKey = openrouterCreds?.apiKey || openrouterCreds?.accessToken;
+        if (openrouterKey) {
+          const jevResult = await resolveJevRoute({
+            body,
+            candidates: augmentedModels,
+            settings: jevSettings,
+            apiKey: openrouterKey,
+            routePolicy,
+            log,
+          });
+          if (jevResult?.models?.length) {
+            finalModels = jevResult.models;
+            effectiveStrategy = "fallback";
+          }
+        }
+      }
+
       const comboStickyLimit = settings.comboStickyRoundRobinLimit;
-      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      log.info("CHAT", `Combo "${modelStr}" with ${finalModels.length} models (strategy: ${effectiveStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
         body,
-        models: augmentedModels,
+        models: finalModels,
         handleSingleModel: withCapacityAdapterStripping(
           (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, traceCtx),
           adapterAdded
         ),
         log,
         comboName: modelStr,
-        comboStrategy,
+        comboStrategy: effectiveStrategy,
         comboStickyLimit
       });
     }
@@ -294,18 +318,41 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         });
       }
 
+      let finalModels = augmentedModels;
+      let effectiveStrategy = comboStrategy;
+      const jevSettings = chatSettings.jevRouting;
+      if (jevSettings?.enabled && augmentedModels.length > 1) {
+        const routePolicy = comboStrategies[modelStr]?.routePolicy || "quality";
+        const openrouterCreds = await getProviderCredentials("openrouter");
+        const openrouterKey = openrouterCreds?.apiKey || openrouterCreds?.accessToken;
+        if (openrouterKey) {
+          const jevResult = await resolveJevRoute({
+            body,
+            candidates: augmentedModels,
+            settings: jevSettings,
+            apiKey: openrouterKey,
+            routePolicy,
+            log,
+          });
+          if (jevResult?.models?.length) {
+            finalModels = jevResult.models;
+            effectiveStrategy = "fallback";
+          }
+        }
+      }
+
       const comboStickyLimit = chatSettings.comboStickyRoundRobinLimit;
-      log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
+      log.info("CHAT", `Combo "${modelStr}" with ${finalModels.length} models (strategy: ${effectiveStrategy}, sticky: ${comboStickyLimit})`);
       return handleComboChat({
         body,
-        models: augmentedModels,
+        models: finalModels,
         handleSingleModel: withCapacityAdapterStripping(
           (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, traceCtx),
           adapterAdded
         ),
         log,
         comboName: modelStr,
-        comboStrategy,
+        comboStrategy: effectiveStrategy,
         comboStickyLimit
       });
     }

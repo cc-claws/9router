@@ -292,6 +292,26 @@ export default function ProfilePage() {
     }
   };
 
+  const updateJevRouting = async (enabled) => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jevRouting: { ...(settings.jevRouting || {}), enabled },
+        }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({
+          ...prev,
+          jevRouting: { ...(prev.jevRouting || {}), enabled },
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to update Jev routing:", err);
+    }
+  };
+
   const updateStickyLimit = async (limit) => {
     const numLimit = parseInt(limit);
     if (isNaN(numLimit) || numLimit < 1) return;
@@ -1490,6 +1510,21 @@ export default function ProfilePage() {
               <Toggle
                 checked={settings.comboStrategy === "round-robin"}
                 onChange={() => updateComboStrategy(settings.comboStrategy === "round-robin" ? "fallback" : "round-robin")}
+                disabled={loading}
+              />
+            </div>
+
+            {/* Jev Semantic Smart Routing */}
+            <div className="flex items-start sm:items-center justify-between gap-4 pt-4 border-t border-border/50">
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-sm sm:text-base">Jev Semantic Smart Routing</p>
+                <p className="text-xs sm:text-sm text-text-muted">
+                  Rank combo models by prompt semantics before fallback
+                </p>
+              </div>
+              <Toggle
+                checked={settings.jevRouting?.enabled === true}
+                onChange={updateJevRouting}
                 disabled={loading}
               />
             </div>

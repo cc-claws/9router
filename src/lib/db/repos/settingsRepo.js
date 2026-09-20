@@ -64,6 +64,11 @@ const DEFAULT_SETTINGS = {
   pxpipeAutoInstall: true,
   pxpipeMinChars: 25000,
   pxpipeTimeoutMs: 15000,
+  jevRouting: {
+    enabled: false,
+    timeoutMs: 800,
+    minConfidence: 0,
+  },
 };
 
 async function readRaw() {
@@ -87,6 +92,9 @@ export function mergeWithDefaults(raw) {
         merged[key] = defVal;
       }
     }
+  }
+  if (merged.jevRouting && typeof merged.jevRouting === "object") {
+    merged.jevRouting = { ...DEFAULT_SETTINGS.jevRouting, ...merged.jevRouting };
   }
   return merged;
 }
