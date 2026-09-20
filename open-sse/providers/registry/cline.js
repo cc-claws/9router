@@ -35,15 +35,21 @@ export default {
       ],
     },
   },
+  // Flagged-tier only. The upstream catalog (~444 entries) is mostly entries
+  // this account cannot call, and probing it surfaced a long tail of <300B
+  // models that are not worth surfacing; the list below is the curated subset
+  // verified to answer. Anything removed here is still reachable through the
+  // dashboard's "Import from /models" button, which probes before importing.
   models: [
     { id: "anthropic/claude-opus-4.7", name: "Claude Opus 4.7" },
     { id: "anthropic/claude-sonnet-4.6", name: "Claude Sonnet 4.6" },
     { id: "anthropic/claude-opus-4.6", name: "Claude Opus 4.6" },
-    { id: "openai/gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { id: "anthropic/claude-sonnet-4.5", name: "Claude Sonnet 4.5" },
     { id: "openai/gpt-5.4", name: "GPT-5.4" },
-    { id: "google/gemini-3.1-pro-preview", name: "Gemini 3.1 Pro Preview" },
-    { id: "google/gemini-3.1-flash-lite-preview", name: "Gemini 3.1 Flash Lite Preview" },
-    { id: "kwaipilot/kat-coder-pro", name: "KAT Coder Pro" },
+    { id: "openai/gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { id: "openai/gpt-5.2", name: "GPT-5.2" },
+    { id: "openai/gpt-4o", name: "GPT-4o" },
+    { id: "nex-agi/nex-n2.5-pro:free", name: "Nex 2.5 Pro (Free)" },
   ],
   oauth: {
     appBaseUrl: "https://app.cline.bot",

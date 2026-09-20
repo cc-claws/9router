@@ -12,7 +12,8 @@ import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
-import { saveRequestUsage } from "@/lib/usageDb.js";
+import { saveRequestUsage, createTrace, finalizeTrace } from "@/lib/usageDb.js";
+import crypto from "crypto";
 
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
@@ -89,6 +90,16 @@ export async function handleEmbeddings(request) {
     log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
   }
 
+  // Trace: one row per embeddings request (fail-open, never blocks the request)
+  const traceId = crypto.randomUUID();
+  createTrace({
+    id: traceId,
+    timestamp: new Date().toISOString(),
+    endpoint: url.pathname,
+    requestedModel: modelStr,
+    status: "running",
+  }).catch(() => {});
+
   // Credential + fallback loop (mirrors handleChat)
   const excludeConnectionIds = new Set();
   let lastError = null;
@@ -103,13 +114,16 @@ export async function handleEmbeddings(request) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
         const status = lastStatus || Number(credentials.lastErrorCode) || HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("EMBEDDINGS", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
+        finalizeTrace(traceId, { status: "error", errorSummary: `HTTP ${status} · ${errorMsg}` }).catch(() => {});
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (excludeConnectionIds.size === 0) {
         log.error("AUTH", `No credentials for provider: ${provider}`);
+        finalizeTrace(traceId, { status: "error", errorSummary: `No credentials for provider: ${provider}` }).catch(() => {});
         return errorResponse(HTTP_STATUS.BAD_REQUEST, `No credentials for provider: ${provider}`);
       }
       log.warn("EMBEDDINGS", "No more accounts available", { provider });
+      finalizeTrace(traceId, { status: "error", errorSummary: lastError || "All accounts unavailable" }).catch(() => {});
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
 
@@ -147,6 +161,7 @@ export async function handleEmbeddings(request) {
           status: "success",
         }).catch(() => {});
       }
+      finalizeTrace(traceId, { status: "success" }).catch(() => {});
       return result.response;
     }
 
@@ -160,6 +175,7 @@ export async function handleEmbeddings(request) {
       continue;
     }
 
+    finalizeTrace(traceId, { status: "error", errorSummary: `HTTP ${result.status} · ${result.error || "unknown"}` }).catch(() => {});
     return result.response;
   }
 }

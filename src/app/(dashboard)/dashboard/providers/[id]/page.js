@@ -639,7 +639,7 @@ export default function ProviderDetailPage() {
       setImportingQoderModels(false);
     }
   };
-  // Fetch the live Cline /models catalog and add every model not yet present.
+  // Fetch the live Cline /models catalog, probe accessibility, and add only accessible models.
   // Cline and ClinePass share the same catalog endpoint (api.cline.bot/api/v1/models).
   const handleImportClineModels = async () => {
     if (importingClineModels) return;
@@ -661,23 +661,57 @@ export default function ProviderDetailPage() {
         alert(translate("No models returned"));
         return;
       }
-      let importedCount = 0;
+
+      // Filter out :batch models and models that already exist locally
+      const candidateIds = [];
       for (const model of models) {
         const modelId = model.id || model.name;
-        if (!modelId) continue;
+        if (!modelId || typeof modelId !== "string" || modelId.endsWith(":batch")) continue;
         const alreadyExists = customModels.some(
           (entry) => entry.providerAlias === providerStorageAlias && entry.id === modelId && (entry.kind || entry.type || "llm") === "llm"
         ) || Object.values(modelAliases).includes(`${providerStorageAlias}/${modelId}`);
-        if (alreadyExists) {
-          continue;
+        if (!alreadyExists) {
+          candidateIds.push(modelId);
         }
+      }
+
+      if (candidateIds.length === 0) {
+        alert(translate("All models already exist, no new models added"));
+        return;
+      }
+
+      // Probe accessibility via backend endpoint so only working models get imported
+      const probeRes = await fetch(`/api/providers/${activeConnection.id}/models/probe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ models: candidateIds }),
+      });
+
+      const probeData = probeRes.ok ? await probeRes.json() : null;
+      // Abort rather than fall back to the full catalog: importing unverified
+      // models is exactly the behaviour this probe exists to prevent.
+      if (!Array.isArray(probeData?.accessible)) {
+        alert(translate("Failed to verify model availability; nothing was imported."));
+        return;
+      }
+      const accessibleIds = probeData.accessible;
+
+      let importedCount = 0;
+      for (const modelId of accessibleIds) {
         await handleAddCustomModel(modelId, "llm", providerStorageAlias);
         importedCount += 1;
       }
+
+      const skippedCount = candidateIds.length - importedCount;
       if (importedCount === 0) {
-        alert(translate("All models already exist, no new models added"));
+        alert(translate("No accessible models found to import"));
       } else {
-        alert(translate("Successfully added") + ` ${importedCount} ` + translate("models"));
+        alert(
+          translate("Successfully added") +
+          ` ${importedCount} ` +
+          translate("models") +
+          (skippedCount > 0 ? ` (${skippedCount} inaccessible models skipped)` : "")
+        );
       }
     } catch (error) {
       console.log("Error importing Cline models:", error);

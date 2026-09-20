@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   handleEmbeddingsCore: vi.fn(),
   saveRequestUsage: vi.fn(),
+  createTrace: vi.fn().mockResolvedValue("trace-id"),
+  finalizeTrace: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../src/sse/services/auth.js", () => ({
@@ -34,7 +36,11 @@ vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
   updateProviderCredentials: vi.fn(),
   checkAndRefreshToken: async (_provider, credentials) => credentials,
 }));
-vi.mock("@/lib/usageDb.js", () => ({ saveRequestUsage: mocks.saveRequestUsage }));
+vi.mock("@/lib/usageDb.js", () => ({
+  saveRequestUsage: mocks.saveRequestUsage,
+  createTrace: mocks.createTrace,
+  finalizeTrace: mocks.finalizeTrace,
+}));
 
 import { handleEmbeddings } from "../../src/sse/handlers/embeddings.js";
 
