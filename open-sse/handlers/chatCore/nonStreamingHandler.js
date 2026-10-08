@@ -214,6 +214,9 @@ export function translateNonStreamingResponse(responseBody, targetFormat, source
         result.usage.completion_tokens_details = { reasoning_tokens: usage.thoughtsTokenCount };
       }
     }
+    if (sourceFormat === FORMATS.CLAUDE) {
+      return openAICompletionToClaudeMessage(result);
+    }
     return result;
   }
 

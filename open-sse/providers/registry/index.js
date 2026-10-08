@@ -128,6 +128,7 @@ import p122 from "./xquik.js";
 import p125 from "./tokenharbor.js";
 import p126 from "./dahl.js";
 import p127 from "./atria.js";
+import p128 from "./youdao-web.js";
 import p129 from "./agnes.js";
 import p130 from "./bai.js";
 import p131 from "./tinyfish.js";
@@ -265,6 +266,7 @@ export default [
   p125,
   p126,
   p127,
+  p128,
   p129,
   p130,
   p131,

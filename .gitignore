@@ -101,3 +101,13 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+
+# Local multi-instance debug (logs, standalone build dirs, start scripts)
+.9router*.log
+.yd-*.log
+.yd-start.ps1
+.next-verify*/
+start-9router-*.cmd
+verify-9router.cmd
+scripts/verify-build.mjs
+tests/mimo-preview-budget-test2.mjs

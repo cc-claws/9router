@@ -330,6 +330,16 @@ PROVIDER_CAPABILITIES.devin = PROVIDER_CAPABILITIES["devin-cli"];
 // The global mcode site serves the same catalog — share the capability table.
 PROVIDER_CAPABILITIES["minimax-code-global"] = PROVIDER_CAPABILITIES["minimax-code"];
 
+// Youdao's luna-ai channel has NO native function calling — the upstream ignores
+// a `tools`/`functions` param. The youdao-web executor EMULATES tool calling by
+// injecting the catalogue into the prompt and parsing a `<tool_call>` sentinel
+// back into OpenAI tool_calls, so `tools: true` is intentional. `refine_key_point`
+// is a utility transform (key-point extraction), not a chat model — no tools.
+PROVIDER_CAPABILITIES["youdao-web"] = {
+  deepseek_r1: { reasoning: true, thinkingFormat: "deepseek", tools: true, contextWindow: 128000, maxOutput: 8192 },
+  refine_key_point: { reasoning: false, tools: false, contextWindow: 128000, maxOutput: 8192 },
+};
+
 /**
  * Pattern fallback — glob (* = wildcard), matched case-insensitively and
  * anchored (^...$) so a pattern must match the full model id. ORDER MATTERS:
