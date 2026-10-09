@@ -1109,7 +1109,8 @@ export default function ProxyPoolsPage() {
             label="Proxy URL"
             value={formData.proxyUrl}
             onChange={(e) => setFormData((prev) => ({ ...prev, proxyUrl: e.target.value }))}
-            placeholder="http://127.0.0.1:7897"
+            placeholder="http://127.0.0.1:7897 or socks5://user:pass@host:port"
+            hint="HTTP, HTTPS, SOCKS4 and SOCKS5 (incl. socks5h) are supported."
           />
           <Input
             label="No Proxy"

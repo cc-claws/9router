@@ -1,6 +1,7 @@
 import { Readable } from "stream";
 import { MEMORY_CONFIG } from "../config/runtimeConfig.js";
 import { dbg } from "./debugLog.js";
+import { createProxyDispatcher } from "./proxyDispatcher.js";
 
 const originalFetch = globalThis.fetch;
 const proxyDispatchers = new Map();
@@ -240,12 +241,7 @@ async function getDispatcher(proxyUrl, insecure = false) {
     if (proxyDispatchers.size >= MEMORY_CONFIG.proxyDispatchersMaxSize) {
       proxyDispatchers.delete(proxyDispatchers.keys().next().value);
     }
-    const { Agent, ProxyAgent } = await import("undici");
-    const connect = insecure ? { rejectUnauthorized: false } : undefined;
-    const dispatcher = normalized
-      ? new ProxyAgent({ uri: normalized, ...(insecure ? { requestTls: connect } : {}) })
-      : new Agent({ connect });
-    proxyDispatchers.set(key, dispatcher);
+    proxyDispatchers.set(key, await createProxyDispatcher(normalized, { insecure }));
   }
 
   return proxyDispatchers.get(key);
