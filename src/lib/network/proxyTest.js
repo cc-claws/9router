@@ -2,7 +2,10 @@ import { fetch as undiciFetch } from "undici";
 import { createProxyDispatcher } from "open-sse/utils/proxyDispatcher.js";
 
 const DEFAULT_TEST_URL = "https://google.com/";
-const DEFAULT_TIMEOUT_MS = 8000;
+// SOCKS proxies (and slow residential/overseas egress) routinely need well over
+// 8s for a single TLS round-trip through the tunnel — an 8s budget marked healthy
+// proxies as dead and auto-deactivated them. Keep generous headroom.
+const DEFAULT_TIMEOUT_MS = 20000;
 
 function getErrorMessage(err) {
   if (!err) return "Unknown error";

@@ -25,6 +25,12 @@ npm run build && PORT=20128 HOSTNAME=0.0.0.0 npm run start           # productio
 - Default runtime port is **20128** (dashboard at `/dashboard`, API at `/v1`).
 - Lint: `npx eslint .` (config `eslint.config.mjs`, extends `eslint-config-next`).
 
+### Building & running — gotchas learned the hard way
+- **`npm install` before building after syncing upstream.** Upstream providers add runtime deps over time (e.g. `@aws-sdk/credential-providers` for the Bedrock provider — declared in `package.json`, listed under `optionalDependencies`). A stale `node_modules` from before the sync builds fine until Turbopack hits it, then dies with `Module not found: Can't resolve '@aws-sdk/credential-providers'`. Reinstall first; don't debug it as a code error.
+- **Build with Turbopack, not `npm run build`.** `npm run build` pins `next build --webpack` (slow). Next 16's default is Turbopack, so plain `next build` compiles in ~15s. The committed `start-9router-<port>.cmd` scripts take that path: `NEXT_DIST_DIR=<dir> next build` → `node scripts/copy-standalone-assets.mjs` → serve `<dir>/standalone/custom-server.js`. `NEXT_DIST_DIR` must be exported for **both** the build and the copy step (the script reads it, and silently no-ops on the default `.next` otherwise). Using a per-instance dist dir (`.next-verify`, `.next-verify-20131`, …) keeps a running instance's artifact from being overwritten mid-build.
+- Serve the **standalone** output, not `.next`: `PORT=20128 node .next-verify/standalone/custom-server.js` — this keeps the modified `custom-server.js` (socket-derived client IP) in effect. After starting, `node scripts/verify-build.mjs <port>` proves the *running* server serves the artifact currently on disk (BUILD_ID chain + new-route probes), so you never judge a build from a stale instance.
+- Transient webpack-only flake: `Error: EPERM: operation not permitted, readlink 'C:\Users\<user>\.cc-code\...'` during `next build --webpack`, pointing **outside** the repo. Background shell launchers (`&`) also die when the tool call ends — start the server detached (`Start-Process`, as the `.cmd` scripts do), not with `&`.
+
 CLI package (`cli/`):
 ```bash
 npm run cli:pack       # build + npm pack from root
